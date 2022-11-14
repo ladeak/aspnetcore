@@ -209,5 +209,19 @@ namespace Microsoft.AspNetCore.HttpSys.Internal
             }
 <# } #>
         }
+
+        private ReadOnlySpan<byte> HeaderKeys => new byte[] {
+        {
+<# foreach(var prop in props) { #>
+            (byte)<#=prop.ID#>,
+<# } #>
+        };
+
+        private string GetHeaderKeyName(HttpSysRequestHeader header) => header switch
+        {
+<# foreach(var prop in props) { #>
+            <#=prop.ID#> => HeaderNames.<#=prop.Name#>,
+<# } #>
+        };
     }
 }

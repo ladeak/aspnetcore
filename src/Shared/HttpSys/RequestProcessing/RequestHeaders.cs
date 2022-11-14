@@ -1,11 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
@@ -82,7 +79,17 @@ internal sealed partial class RequestHeaders : IHeaderDictionary
 
     public ICollection<string> Keys
     {
-        get { return PropertiesKeys().Concat(Extra.Keys).ToArray(); }
+        get
+        {
+            var destination = new string[Count];
+            Span<byte> observedKnownHeaders = stackalloc byte[HeaderKeys.Length];
+            int observedKnownHeadersCount = _requestMemoryBlob.GetKeys(HeaderKeys, observedKnownHeaders, destination);
+            for (int i = 0; i < observedKnownHeadersCount; i++)
+            {
+                destination[i] = GetHeaderKeyName((HttpSysRequestHeader)observedKnownHeaders[i]);
+            }
+            return destination;
+        }
     }
 
     ICollection<StringValues> IDictionary<string, StringValues>.Values
@@ -94,6 +101,8 @@ internal sealed partial class RequestHeaders : IHeaderDictionary
     {
         get { return PropertiesKeys().Count() + Extra.Count; }
     }
+
+    public int Count => _requestMemoryBlob.CountHeaders(HeaderKeys);
 
     public bool Remove(string key)
     {

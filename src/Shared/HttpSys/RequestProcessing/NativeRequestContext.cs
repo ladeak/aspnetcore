@@ -343,6 +343,121 @@ internal unsafe class NativeRequestContext : IDisposable
         return value;
     }
 
+    internal int GetKeys(ReadOnlySpan<byte> expectedHeaders, Span<byte> observedHeaders, Span<string> destination)
+    {
+        if (PermanentlyPinned)
+        {
+            int observedKnownHeadersCount = PopulateKnownKeys(_nativeRequest, expectedHeaders, observedHeaders);
+
+            // Skip ahead in the destination, leaving space for the observedHeaders (known header names) to be resolved at the callsite.
+            PopulateUnknownKeys(_nativeRequest, 0, destination.Slice(observedKnownHeadersCount));
+            return observedKnownHeadersCount;
+        }
+        else
+        {
+            fixed (byte* pMemoryBlob = _backingBuffer.Memory.Span)
+            {
+                var request = (HttpApiTypes.HTTP_REQUEST*)(pMemoryBlob + _bufferAlignment);
+                long fixup = pMemoryBlob - (byte*)_originalBufferAddress;
+                int observedKnownHeadersCount = PopulateKnownKeys(request, expectedHeaders, observedHeaders);
+
+                // Skip ahead in the destination, leaving space for the observedHeaders (known header names) to be resolved at the callsite.
+                PopulateUnknownKeys(request, fixup, destination.Slice(observedKnownHeadersCount));
+                return observedKnownHeadersCount;
+            }
+        }
+    }
+
+    private int PopulateKnownKeys(HttpApiTypes.HTTP_REQUEST* request, ReadOnlySpan<byte> expectedHeaders, Span<byte> observedHeaders)
+    {
+        int count = 0;
+        foreach (byte headerIndex in expectedHeaders)
+        {
+            HttpApiTypes.HTTP_KNOWN_HEADER* pKnownHeader = (&request->Headers.KnownHeaders) + headerIndex;
+
+            // For known headers, when header value is empty, RawValueLength will be 0 and
+            // pRawValue will point to empty string ("\0")
+            if (pKnownHeader->RawValueLength > 0)
+            {
+                observedHeaders[count++] = headerIndex;
+            }
+        }
+        return count;
+    }
+
+    private void PopulateUnknownKeys(HttpApiTypes.HTTP_REQUEST* request, long fixup, Span<string> destination)
+    {
+        if (request->Headers.UnknownHeaderCount == 0)
+        {
+            return;
+        }
+        var pUnknownHeader = (HttpApiTypes.HTTP_UNKNOWN_HEADER*)(fixup + (byte*)request->Headers.pUnknownHeaders);
+        for (int index = 0; index < request->Headers.UnknownHeaderCount; index++)
+        {
+            if (pUnknownHeader->pName != null && pUnknownHeader->NameLength > 0)
+            {
+                var headerName = HeaderEncoding.GetString(pUnknownHeader->pName + fixup, pUnknownHeader->NameLength, _useLatin1);
+                destination[index] = headerName;
+            }
+            pUnknownHeader++;
+        }
+    }
+
+    internal int CountHeaders(ReadOnlySpan<byte> headers)
+    {
+        if (PermanentlyPinned)
+        {
+            return CountKnownHeaders(_nativeRequest, headers) + CountUnknownHeaders(_nativeRequest, 0);
+        }
+        else
+        {
+            fixed (byte* pMemoryBlob = _backingBuffer.Memory.Span)
+            {
+                var request = (HttpApiTypes.HTTP_REQUEST*)(pMemoryBlob + _bufferAlignment);
+                long fixup = pMemoryBlob - (byte*)_originalBufferAddress;
+                return CountKnownHeaders(request, headers) + CountUnknownHeaders(request, fixup);
+            }
+        }
+    }
+
+    private int CountKnownHeaders(HttpApiTypes.HTTP_REQUEST* request, ReadOnlySpan<byte> headers)
+    {
+        int count = 0;
+        foreach (byte headerIndex in headers)
+        {
+            HttpApiTypes.HTTP_KNOWN_HEADER* pKnownHeader = (&request->Headers.KnownHeaders) + headerIndex;
+
+            // For known headers, when header value is empty, RawValueLength will be 0 and
+            // pRawValue will point to empty string ("\0")
+            if (pKnownHeader->RawValueLength > 0)
+            {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int CountUnknownHeaders(HttpApiTypes.HTTP_REQUEST* request, long fixup)
+    {
+        if (request->Headers.UnknownHeaderCount == 0)
+        {
+            return 0;
+        }
+        int count = 0;
+        var pUnknownHeader = (HttpApiTypes.HTTP_UNKNOWN_HEADER*)(fixup + (byte*)request->Headers.pUnknownHeaders);
+        for (int index = 0; index < request->Headers.UnknownHeaderCount; index++)
+        {
+            // For unknown headers, when header value is empty, RawValueLength will be 0 and
+            // pRawValue will be null.
+            if (pUnknownHeader->pName != null && pUnknownHeader->NameLength > 0)
+            {
+                count++;
+            }
+            pUnknownHeader++;
+        }
+        return count;
+    }
+
     internal void GetUnknownHeaders(IDictionary<string, StringValues> unknownHeaders)
     {
         if (PermanentlyPinned)
@@ -391,8 +506,8 @@ internal unsafe class NativeRequestContext : IDisposable
                 }
                 pUnknownHeader++;
             }
+            }
         }
-    }
 
     internal SocketAddress? GetRemoteEndPoint()
     {
