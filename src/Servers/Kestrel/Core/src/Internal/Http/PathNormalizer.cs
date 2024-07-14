@@ -4,6 +4,8 @@
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using System.Text;
 using Microsoft.AspNetCore.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
@@ -55,31 +57,56 @@ internal static class PathNormalizer
     public static int RemoveDotSegments(Span<byte> src)
     {
         Debug.Assert(src[0] == '/', "Path segment must always start with a '/'");
-        ReadOnlySpan<byte> dotSlash = "./"u8;
         ReadOnlySpan<byte> slashDot = "/."u8;
         Vector<byte> vSlash = new Vector<byte>(ByteSlash);
+        Vector<byte> vDot = new Vector<byte>(ByteDot);
 
         var writtenLength = 0;
         var readPointer = 0;
 
         while (src.Length > readPointer)
         {
-            while (src.Length > readPointer + Vector<byte>.Count)
+            while (src.Length > readPointer + Vector<byte>.Count + 1)
             {
                 var vInput = Vector.LoadUnsafe(ref src[readPointer]);
-                var vMatch = Vector.Equals(vInput, vSlash);
-                if (vMatch == Vector<byte>.Zero)
+                var vMatchSlash = Vector.Equals(vInput, vSlash);
+                var vInput1 = Vector.LoadUnsafe(ref src[readPointer + 1]);
+                var vMatchDot = Vector.Equals(vInput1, vDot);
+                if ((vMatchSlash & vMatchDot) == Vector<byte>.Zero)
                 {
-                    Vector.StoreUnsafe(vInput, ref src[writtenLength]);
+                    if (readPointer != writtenLength)
+                    {
+                        Vector.StoreUnsafe(vInput, ref src[writtenLength]);
+                    }
                     writtenLength += Vector<byte>.Count;
                     readPointer += Vector<byte>.Count;
                 }
                 else
                 {
-                    var index = Vector.t
+                    if (Vector256.IsHardwareAccelerated)
+                    {
+                        uint mask = (vMatchSlash & vMatchDot).AsVector256().ExtractMostSignificantBits();
+                        while (mask > 0)
+                        {
+                            var index = BitOperations.TrailingZeroCount(mask);
+                            if (readPointer != writtenLength)
+                            {
+                                Unsafe.CopyBlock(ref src[writtenLength], ref src[readPointer], (uint)index);
+                            }
+                            writtenLength += index;
+                            readPointer += index;
+
+                            var rpBefore = readPointer;
+                            if (HandleSlashDotBegin(src, ref writtenLength, ref readPointer))
+                            {
+                                return writtenLength;
+                            }
+                            mask >>= int.Min(31, index + readPointer - rpBefore);
+                        }
+                    }
+                    break;
                 }
             }
-
 
             var nextDotSegmentIndex = src[readPointer..].IndexOf(slashDot);
             if (nextDotSegmentIndex < 0 && readPointer == 0)
@@ -101,77 +128,91 @@ internal static class PathNormalizer
                 readPointer += nextDotSegmentIndex;
             }
 
-            // Case of /../ or /./
-            int remainingLength = src.Length - readPointer;
-            if ((uint)remainingLength > 3)
+            if (HandleSlashDotBegin(src, ref writtenLength, ref readPointer))
             {
-                var nextIndex = readPointer + 2;
-                if (src[nextIndex] == ByteSlash)
-                {
-                    readPointer = nextIndex;
-                }
-                else if (dotSlash.SequenceEqual(src.Slice(nextIndex, 2)))
-                {
-                    // Remove the last segment and replace the path with /
-                    var lastIndex = src[..writtenLength].LastIndexOf(ByteSlash);
-
-                    // Move write pointer to the end of the previous segment without / or to start position
-                    writtenLength = int.Max(0, lastIndex);
-
-                    // Move the read pointer to the next segments beginning including /
-                    readPointer += 3;
-                }
-                else
-                {
-                    // No dot segment, copy the matched /. and bump the read pointer
-                    slashDot.CopyTo(src[writtenLength..]);
-                    writtenLength += 2;
-                    readPointer = nextIndex;
-                }
-            }
-            // Ending with /.. or /./
-            else if ((uint)remainingLength == 3)
-            {
-                var nextIndex = readPointer + 2;
-                if (src[nextIndex] == ByteSlash)
-                {
-                    // Replace the /./ segment with a closing /
-                    src[writtenLength++] = ByteSlash;
-                    return writtenLength;
-                }
-                else if (src[nextIndex] == ByteDot)
-                {
-                    // Remove the last segment and replace the path with /
-                    var lastSlashIndex = src[..writtenLength].LastIndexOf(ByteSlash);
-
-                    // If this was the beginning of the string, then return /
-                    if (lastSlashIndex < 0)
-                    {
-                        src[0] = ByteSlash;
-                        return 1;
-                    }
-                    else
-                    {
-                        writtenLength = lastSlashIndex + 1;
-                    }
-                    return writtenLength;
-                }
-                else
-                {
-                    // No dot segment, copy the /. and bump the read pointer.
-                    slashDot.CopyTo(src[writtenLength..]);
-                    writtenLength += 2;
-                    readPointer = nextIndex;
-                }
-            }
-            // Ending with /.
-            else if ((uint)remainingLength == 2)
-            {
-                src[writtenLength++] = ByteSlash;
                 return writtenLength;
             }
         }
         return writtenLength;
+    }
+
+    private static bool HandleSlashDotBegin(Span<byte> src, ref int writtenLength, ref int readPointer)
+    {
+        ReadOnlySpan<byte> dotSlash = "./"u8;
+        ReadOnlySpan<byte> slashDot = "/."u8;
+
+        // Case of /../ or /./
+        int remainingLength = src.Length - readPointer;
+        if (remainingLength > 3)
+        {
+            var nextIndex = readPointer + 2;
+            if (src[nextIndex] == ByteSlash)
+            {
+                readPointer = nextIndex;
+            }
+            else if (MemoryMarshal.CreateSpan(ref src[nextIndex], 2).StartsWith(dotSlash))
+            {
+                // Remove the last segment and replace the path with /
+                var lastIndex = MemoryMarshal.CreateSpan(ref src[0], writtenLength).LastIndexOf(ByteSlash);
+
+                // Move write pointer to the end of the previous segment without / or to start position
+                writtenLength = int.Max(0, lastIndex);
+
+                // Move the read pointer to the next segments beginning including /
+                readPointer += 3;
+            }
+            else
+            {
+                // No dot segment, copy the matched /. and bump the read pointer
+                slashDot.CopyTo(src[writtenLength..]);
+                writtenLength += 2;
+                readPointer = nextIndex;
+            }
+            return false;
+        }
+        // Ending with /.. or /./
+        else if (remainingLength == 3)
+        {
+            var nextIndex = readPointer + 2;
+            if (src[nextIndex] == ByteSlash)
+            {
+                // Replace the /./ segment with a closing /
+                src[writtenLength++] = ByteSlash;
+                return true;
+            }
+            else if (src[nextIndex] == ByteDot)
+            {
+                // Remove the last segment and replace the path with /
+                var lastSlashIndex = MemoryMarshal.CreateSpan(ref src[0], writtenLength).LastIndexOf(ByteSlash);
+
+                // If this was the beginning of the string, then return /
+                if (lastSlashIndex < 0)
+                {
+                    src[0] = ByteSlash;
+                    writtenLength = 1;
+                    return true;
+                }
+                else
+                {
+                    writtenLength = lastSlashIndex + 1;
+                }
+                return true;
+            }
+            else
+            {
+                // No dot segment, copy the /. and bump the read pointer.
+                slashDot.CopyTo(src[writtenLength..]);
+                writtenLength += 2;
+                readPointer = nextIndex;
+            }
+        }
+        // Ending with /.
+        else if (remainingLength == 2)
+        {
+            src[writtenLength++] = ByteSlash;
+            return true;
+        }
+        return false;
     }
 
     public static bool ContainsDotSegments(Span<byte> src)

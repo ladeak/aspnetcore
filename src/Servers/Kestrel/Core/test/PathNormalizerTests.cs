@@ -66,6 +66,11 @@ public class PathNormalizerTests
     [InlineData("/.", "/")]
     [InlineData("/a/abc/../abc/../b", "/a/b")]
     [InlineData("/a/abc/.a", "/a/abc/.a")]
+    [InlineData("/long/request/target/for/benchmarking/what/else/can/we/put/here/long/request/target/for/benchmarking/what/else/can/we/put/here/./long/request/target/for/benchmarking/what/else/can/we/put/here/long/request/target/for/benchmarking/what/else/can/we/put/here/./", "/long/request/target/for/benchmarking/what/else/can/we/put/here/long/request/target/for/benchmarking/what/else/can/we/put/here/long/request/target/for/benchmarking/what/else/can/we/put/here/long/request/target/for/benchmarking/what/else/can/we/put/here/")]
+    [InlineData("/longrequesttargetforbenchmarkingwhatelsecanweputherelongrequesttargetforbenchmarkingwhatelsecanweputhere/./longrequesttargetforbenchmarkingwhatelsecanweputherelongrequesttargetforbenchmarkingwhatelsecanweputhere/", "/longrequesttargetforbenchmarkingwhatelsecanweputherelongrequesttargetforbenchmarkingwhatelsecanweputhere/longrequesttargetforbenchmarkingwhatelsecanweputherelongrequesttargetforbenchmarkingwhatelsecanweputhere/")]
+    [InlineData("/zlong/../request/../target/../for/../benchmarking/../what/../else/../can/../we/../put/../here", "/here")]
+    [InlineData("/zlong/./request/./target/./for/./benchmarking/./what/./else/./can/./we/./put/./here", "/zlong/request/target/for/benchmarking/what/else/can/we/put/here")]
+    [InlineData("/zlong1/request/target/for/benchmarking/what/else/can/we/put/here", "/zlong1/request/target/for/benchmarking/what/else/can/we/put/here")]
     public void RemovesDotSegments(string input, string expected)
     {
         var data = Encoding.ASCII.GetBytes(input);
