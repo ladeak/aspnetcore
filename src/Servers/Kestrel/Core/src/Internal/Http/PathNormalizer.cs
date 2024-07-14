@@ -80,11 +80,12 @@ internal static class PathNormalizer
             // Case of /../ or /./
             if (src.Length > 3)
             {
-                if (src[2] == ByteSlash)
+                src = src[2..];
+                if (src[0] == ByteSlash)
                 {
-                    src = src[2..];
+                    continue;
                 }
-                else if (dotSlash.SequenceEqual(src.Slice(2, 2)))
+                else if (src.StartsWith(dotSlash))
                 {
                     // Remove the last segment and replace the path with /
                     var lastIndex = dst[..writtenLength].LastIndexOf(ByteSlash);
@@ -93,14 +94,13 @@ internal static class PathNormalizer
                     writtenLength = int.Max(0, lastIndex);
 
                     // Move the read pointer to the next segments beginning including /
-                    src = src[3..];
+                    src = src[1..];
                 }
                 else
                 {
-                    // No dot segment, copy the matched /. and bump the read pointer
+                    // Not a dot segment, copy the matched /. and bump the read pointer
                     slashDot.CopyTo(dst[writtenLength..]);
                     writtenLength += 2;
-                    src = src[2..];
                 }
             }
             // Ending with /.. or /./
@@ -131,7 +131,7 @@ internal static class PathNormalizer
                 }
                 else
                 {
-                    // No dot segment, copy the /. and bump the read pointer.
+                    // Not a dot segment, copy the /. and bump the read pointer.
                     slashDot.CopyTo(dst[writtenLength..]);
                     writtenLength += 2;
                     src = src[2..];
