@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.AspNetCore.Internal;
@@ -56,12 +57,30 @@ internal static class PathNormalizer
         Debug.Assert(src[0] == '/', "Path segment must always start with a '/'");
         ReadOnlySpan<byte> dotSlash = "./"u8;
         ReadOnlySpan<byte> slashDot = "/."u8;
+        Vector<byte> vSlash = new Vector<byte>(ByteSlash);
 
         var writtenLength = 0;
         var readPointer = 0;
 
         while (src.Length > readPointer)
         {
+            while (src.Length > readPointer + Vector<byte>.Count)
+            {
+                var vInput = Vector.LoadUnsafe(ref src[readPointer]);
+                var vMatch = Vector.Equals(vInput, vSlash);
+                if (vMatch == Vector<byte>.Zero)
+                {
+                    Vector.StoreUnsafe(vInput, ref src[writtenLength]);
+                    writtenLength += Vector<byte>.Count;
+                    readPointer += Vector<byte>.Count;
+                }
+                else
+                {
+                    var index = Vector.t
+                }
+            }
+
+
             var nextDotSegmentIndex = src[readPointer..].IndexOf(slashDot);
             if (nextDotSegmentIndex < 0 && readPointer == 0)
             {
